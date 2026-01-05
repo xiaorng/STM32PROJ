@@ -47,40 +47,45 @@ void app_init(void)
 
 void app_loop(void)
 {
-    // 1) 心跳：每 1s 更新 uptime 并打印一次状态
+    // 心跳：别刷屏（你之前已经改成闪灯就保持）
     uint32_t now = HAL_GetTick();
     if ((now - s_last_beat_ms) >= 1000) {
         s_last_beat_ms += 1000;
         s_uptime_s++;
-        LOGI("STATUS", "uptime=%lu s", (unsigned long)s_uptime_s);
+        HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
     }
 
-    // 2) 轮询收串口字符，拼一行命令
+    // 串口：一次把所有可读字节读完，防止溢出丢数据
     uint8_t ch;
-    int r = platform_uart_read_byte(&ch);
-    if (r == 1) {
+    while (platform_uart_read_byte(&ch) == 1) {
+
         if (ch == '\r' || ch == '\n') {
             s_cmd_buf[s_cmd_len] = '\0';
-            // 简单去掉末尾空格
             while (s_cmd_len > 0 && s_cmd_buf[s_cmd_len - 1] == ' ') {
                 s_cmd_buf[--s_cmd_len] = '\0';
             }
             handle_cmd(s_cmd_buf);
             s_cmd_len = 0;
+            continue;
+        }
+
+        // 可选：支持退格
+        if (ch == '\b' || ch == 0x7F) {
+            if (s_cmd_len > 0) s_cmd_len--;
+            continue;
+        }
+
+        if (s_cmd_len < sizeof(s_cmd_buf) - 1) {
+            s_cmd_buf[s_cmd_len++] = (char)ch;
         } else {
-            if (s_cmd_len < sizeof(s_cmd_buf) - 1) {
-                s_cmd_buf[s_cmd_len++] = (char)ch;
-            } else {
-                // 缓冲满了，丢弃并报警
-                s_cmd_len = 0;
-                LOGW("CMD", "buffer overflow");
-            }
+            s_cmd_len = 0;
+            LOGW("CMD", "buffer overflow");
         }
     }
 
-    // 小延时，避免空转占满 CPU（后面上RTOS会换掉）
-    HAL_Delay(1);
+    // 别 delay，delay 会让你更容易丢字节
 }
+
 
 
 
