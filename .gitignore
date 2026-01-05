@@ -1,0 +1,27 @@
+﻿# Build outputs
+Debug/
+Release/
+build/
+*.o
+*.d
+*.elf
+*.map
+*.list
+*.hex
+*.bin
+
+# CubeIDE / Eclipse
+.settings/
+.metadata/
+*.launch
+*.log
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Backups
+*.bak
+*.tmp
