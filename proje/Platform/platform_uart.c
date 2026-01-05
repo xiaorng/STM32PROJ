@@ -16,5 +16,14 @@ int platform_uart_write(const uint8_t *data, size_t len)
     }
     return 0;
 }
+int platform_uart_read_byte(uint8_t *out)
+{
+    if (out == NULL) return -1;
 
+    // timeout=0：非阻塞轮询
+    HAL_StatusTypeDef st = HAL_UART_Receive(&huart2, out, 1, 0);
+    if (st == HAL_OK) return 1;        // 读到了 1 个字节
+    if (st == HAL_TIMEOUT) return 0;   // 没数据
+    return -2;                          // 其他错误
+}
 

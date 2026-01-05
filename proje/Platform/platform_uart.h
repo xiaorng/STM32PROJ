@@ -12,6 +12,7 @@
 #include <stdint.h>
 
 int platform_uart_write(const uint8_t *data, size_t len);
+int platform_uart_read_byte(uint8_t *out);
 
 
 
