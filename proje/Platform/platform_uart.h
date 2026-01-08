@@ -8,11 +8,17 @@
 #ifndef PLATFORM_UART_H_
 #define PLATFORM_UART_H_
 #pragma once
-#include <stddef.h>
 #include <stdint.h>
+#include <stddef.h>
 
-int platform_uart_write(const uint8_t *data, size_t len);
-int platform_uart_read_byte(uint8_t *out);
+int      platform_uart_init(void);
+int      platform_uart_write(const uint8_t *data, size_t len);
+int      platform_uart_read_byte(uint8_t *out);
+
+uint32_t platform_uart_rx_drop_count(void);
+uint32_t platform_uart_tx_drop_count(void);
+
+
 
 
 
