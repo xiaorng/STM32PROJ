@@ -1,0 +1,37 @@
+﻿# ===== STM32CubeIDE / Eclipse =====
+.metadata/
+.settings/
+*.launch
+*.log
+
+# ===== Build outputs =====
+Debug/
+Release/
+Binaries/
+build/
+**/Debug/
+**/Release/
+**/Binaries/
+**/build/
+
+# ===== Toolchain outputs =====
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.map
+*.list
+*.lst
+*.hex
+*.bin
+
+# ===== OS / Editor =====
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ===== Backups =====
+*.bak
+*.tmp

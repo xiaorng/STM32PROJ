@@ -8,7 +8,7 @@
 #include "platform_uart.h"
 #include <stdio.h>
 #include <string.h>
-
+#include <stdint.h>
 static log_level_t g_log_level = LOG_LVL_INFO;
 
 void log_init(void)

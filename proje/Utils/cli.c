@@ -8,7 +8,9 @@
 #include "platform_uart.h"
 #include <string.h>
 #include <stdio.h>
-
+#include <stdint.h>
+#include <string.h>
+#include"platform_uart.h"
 #ifndef CLI_LINE_MAX
 #define CLI_LINE_MAX 64
 #endif

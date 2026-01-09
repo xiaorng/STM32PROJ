@@ -9,7 +9,7 @@
 #define CLI_H_
 #pragma once
 #include <stdint.h>
-
+#include"platform_uart.h"
 typedef void (*cli_cmd_fn_t)(int argc, char **argv);
 
 void cli_init(void);
