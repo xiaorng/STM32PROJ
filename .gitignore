@@ -1,27 +1,24 @@
-﻿# Build outputs
-Debug/
-Release/
-build/
-*.o
-*.d
-*.elf
-*.map
-*.list
-*.hex
-*.bin
+﻿# ===== STM32CubeIDE / Eclipse build outputs =====
+**/Debug/
+**/Release/
+**/build/
+**/Build/
 
-# CubeIDE / Eclipse
-.settings/
-.metadata/
-*.launch
-*.log
+# ===== Compiled objects / binaries =====
+**/*.o
+**/*.a
+**/*.d
+**/*.su
+**/*.elf
+**/*.hex
+**/*.bin
+**/*.map
+**/*.list
 
-# OS / Editor
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
+# ===== Eclipse/IDE noise =====
+**/.metadata/
+**/*.launch
 
-# Backups
-*.bak
-*.tmp
+# ===== OS =====
+**/Thumbs.db
+**/.DS_Store
