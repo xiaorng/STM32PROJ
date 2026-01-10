@@ -1,4 +1,4 @@
-_git_backup/
+# Build outputs
 Debug/
 Release/
 build/
@@ -10,6 +10,15 @@ build/
 *.list
 *.hex
 *.bin
+
+# IDE / OS
 .metadata/
 .settings/
 *.launch
+*.log
+.DS_Store
+Thumbs.db
+
+# CubeIDE / GCC
+**/obj/
+**/out/

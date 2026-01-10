@@ -5,8 +5,10 @@
  *      Author: SYRLIST
  */
 #include "platform_motor_b6612.h"
+#include "platform_pwm.h"
+#include "main.h"   // 这里才有 xxx_Pin / xxx_GPIO_Port
 #include "tim.h"
-#include "gpio.h"
+#include <stdlib.h>
 
 #define MOTOR_PWM_TIM      htim1
 #define MOTOR_PWM_CH       TIM_CHANNEL_1   // 你选 CH1/CH2/CH3 都行
