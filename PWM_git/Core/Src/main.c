@@ -1,430 +1,247 @@
-/* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
-/* USER CODE END Header */
-/* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include <stdio.h>
+#include <string.h>
+#include "pwm.h"
+#include "uart_log.h"
+#include "adc_sense.h"
+#include <stdbool.h>
+// ====== 由 CubeMX 在其它 .c 里定义，这里只声明 ======
+extern ADC_HandleTypeDef  hadc1;
+extern TIM_HandleTypeDef  htim2;   // PWM 定时器
+extern TIM_HandleTypeDef  htim4;   // 1kHz 控制定时器
+extern UART_HandleTypeDef huart2;
 
-/* Private includes ----------------------------------------------------------*/
-/* USER CODE BEGIN Includes */
-#include<stdio.h>
-#include<string.h>
-#include <unistd.h>
-/* USER CODE END Includes */
+// 来自 adc_sense.c 的滤波结果（DMA+平均）
+extern volatile uint16_t adc_avg;
 
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
-
-/* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-
-/* USER CODE END PD */
-
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-
-/* USER CODE END PM */
-
-/* Private variables ---------------------------------------------------------*/
-TIM_HandleTypeDef htim2;
-TIM_HandleTypeDef htim3;
-
-UART_HandleTypeDef huart2;
-
-/* USER CODE BEGIN PV */
-volatile uint16_t period_cnt = 0;
-volatile uint16_t high_cnt   = 0;
-volatile uint8_t  cap_ok     = 0;
-
-
-/* USER CODE END PV */
-
-/* Private function prototypes -----------------------------------------------*/
-void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
-static void MX_USART2_UART_Init(void);
-static void MX_TIM2_Init(void);
-static void MX_TIM3_Init(void);
-/* USER CODE BEGIN PFP */
-
-/* USER CODE END PFP */
-
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
-int _write(int file, char *ptr, int len)
-{
-    (void)file;
-    HAL_UART_Transmit(&huart2, (uint8_t*)ptr, len, HAL_MAX_DELAY);
-    return len;
+// ====== 本文件内用的小工具 ======
+static inline int clampi(int v, int lo, int hi){
+    if(v < lo) return lo;
+    if(v > hi) return hi;
+    return v;
 }
-/* USER CODE END 0 */
 
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
+// ====== 状态/参数 ======
+typedef enum { ST_IDLE=0, ST_RUN=1, ST_FAULT=2 } sys_state_t;
+static volatile sys_state_t g_state = ST_IDLE;
+static volatile uint8_t  arm_ok    = 1;
+static volatile uint8_t  use_cl    = 0;      // 0=开环, 1=闭环
+static volatile uint8_t  duty_cmd  = 10;     // 5..95 %
+static volatile uint16_t target_adc= 2600;
+
+#define KP      6
+#define KI_Q    1
+#define I_SHIFT 0
+#define I_MAX   (4095*8)
+#define I_MIN   (-I_MAX)
+
+static int32_t I_acc = 0;
+static volatile uint32_t ms = 0;
+
+// ====== 运行/空闲 ======
+static void enter_idle(void){ g_state = ST_IDLE; pwm_set_percent(0); }
+static void enter_run(void){  if(arm_ok && g_state!=ST_FAULT) g_state = ST_RUN; }
+static const char* mode_str(void){ return use_cl ? "CL":"OL"; }
+
+// ====== 指令解析辅助 ======
+static int parse_num2(const char *s, uint32_t *out){
+    if(s[0]<'0'||s[0]>'9'||s[1]<'0'||s[1]>'9') return 0;
+    *out = (uint32_t)(s[0]-'0')*10u + (uint32_t)(s[1]-'0');
+    return 1;
+}
+static int parse_num4(const char *s, uint32_t *out){
+    for(int i=0;i<4;i++) if(s[i]<'0'||s[i]>'9') return 0;
+    *out = ((uint32_t)(s[0]-'0')*1000u)+((uint32_t)(s[1]-'0')*100u)
+         + ((uint32_t)(s[2]-'0')*10u)+ (uint32_t)(s[3]-'0');
+    return 1;
+}
+
+// ====== 1kHz 控制环 ======
+static void control_tick_1kHz(void){
+    uint16_t adc = adc_avg;
+
+    if (g_state == ST_RUN){
+        if (use_cl){
+            // === A) 若发现方向相反，把下面这一行的符号变成负的：err = target - adc;
+            int32_t err = (int32_t)target_adc - (int32_t)adc;
+
+            // 饱和边界
+            const int DUTY_MIN = 5, DUTY_MAX = 95;
+
+            // 仅当未饱和或误差方向有利于“脱离饱和”时才积分（抗风up）
+            bool at_upper = (duty_cmd >= DUTY_MAX);
+            bool at_lower = (duty_cmd <= DUTY_MIN);
+            bool freeze_I = ( (at_upper && err > 0) || (at_lower && err < 0) );
+
+            if (!freeze_I){
+                I_acc += err;
+                if (I_acc > I_MAX) I_acc = I_MAX;
+                if (I_acc < I_MIN) I_acc = I_MIN;
+            }
+
+            // 注意位移顺序：先乘后右移
+            // 建议初始：KP=16, KI_Q=8, I_SHIFT=8  （等体检通过后再细调）
+            int32_t pi = (int32_t)KP * err + ( ( (int32_t)KI_Q * I_acc ) >> I_SHIFT );
+
+            // 把 PI 输出映射到占空微调，步子不要太大
+            int d = (int)duty_cmd + (pi >> 7);   // 右移 7 只是“缩放旋钮”，必要时改成 >>6 或 >>8
+            if (d < DUTY_MIN) d = DUTY_MIN;
+            if (d > DUTY_MAX) d = DUTY_MAX;
+            duty_cmd = (uint8_t)d;
+        }
+
+        pwm_set_percent(duty_cmd);
+    }else{
+        pwm_set_percent(0);
+    }
+
+    if ((ms % 100) == 0){
+        log_printf("ms=%lu state=%d fault=0(OK) mode=%s duty%%%u adc_avg=%u target=%u arm=%u\r\n",
+                   (unsigned long)ms, (int)g_state, mode_str(),
+                   (unsigned)duty_cmd, (unsigned)adc, (unsigned)target_adc, (unsigned)arm_ok);
+    }
+}
+
+
+// ====== 串口命令：逐行解析 ======
+static void process_command_line(char *cmd){
+    if(cmd[0]==0) return;
+
+    if(!strcmp(cmd,"c") || !strcmp(cmd,"C")){ enter_idle(); log_printf("[CMD] clear -> IDLE\r\n"); return; }
+    if(!strcmp(cmd,"k") || !strcmp(cmd,"K")){ enter_idle(); log_printf("[CMD] enter IDLE\r\n");    return; }
+    if(!strcmp(cmd,"e") || !strcmp(cmd,"E")){ enter_run();  log_printf("[CMD] enter RUN\r\n");     return; }
+    if(!strcmp(cmd,"s") || !strcmp(cmd,"S")){
+        log_printf("[CMD] state=%d mode=%s duty%%%u adc=%u target=%u\r\n",
+            (int)g_state, mode_str(), (unsigned)pwm_get_percent(), (unsigned)adc_avg, (unsigned)target_adc);
+        return;
+    }
+    if((cmd[0]=='d'||cmd[0]=='D') && strlen(cmd)>=3){
+        uint32_t v;
+        if(parse_num2(&cmd[1], &v)){
+            duty_cmd = (uint8_t)clampi((int)v,5,95);
+            use_cl = 0;
+            enter_run();
+            log_printf("[CMD] open-loop duty=%u%%\r\n", (unsigned)duty_cmd);
+        }
+        return;
+    }
+    if((cmd[0]=='t'||cmd[0]=='T') && strlen(cmd)>=5){
+        uint32_t v;
+        if(parse_num4(&cmd[1], &v)){
+            if(v>4095) v=4095;
+            target_adc = (uint16_t)v;
+            use_cl = 1;
+            enter_run();
+            log_printf("[CMD] closed-loop target=%u\r\n", (unsigned)target_adc);
+        }
+        return;
+    }
+    if (use_cl && (ms % 100 == 0)) {
+        int32_t err = (int32_t)target_adc - (int32_t)adc_avg;
+        log_printf("PI dbg: adc=%u tar=%u err=%ld duty=%u\r\n",
+                   (unsigned)adc_avg, (unsigned)target_adc, (long)err, (unsigned)duty_cmd);
+    }
+
+}
+
+static void uart_poll_cmd(void){
+    uint8_t ch;
+    if(HAL_UART_Receive(&huart2, &ch, 1, 0) != HAL_OK) return;
+
+    static char line[32];
+    static uint8_t idx = 0;
+
+    if(ch=='\r' || ch=='\n'){
+        if(idx){
+            line[idx] = '\0';
+            process_command_line(line);
+            idx = 0;
+        }
+    }else{
+        if(idx < sizeof(line)-1) line[idx++] = (char)ch;
+        else idx = 0; // 溢出清零
+    }
+}
+
+// ====== TIM4 中断：1ms ======
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
+    if(htim->Instance == TIM4){
+        ms++;
+        control_tick_1kHz();
+    }
+}
+
+// ====== 由 CubeMX 生成的 init 原型（在各自 .c 内实现） ======
+void SystemClock_Config(void);
+void MX_GPIO_Init(void);
+void MX_DMA_Init(void);
+void MX_USART2_UART_Init(void);
+void MX_ADC1_Init(void);
+void MX_TIM2_Init(void);
+void MX_TIM4_Init(void);
+
+// ====== 主函数 ======
 int main(void)
 {
+    HAL_Init();
+    SystemClock_Config();
 
-  /* USER CODE BEGIN 1 */
+    MX_GPIO_Init();
+    MX_DMA_Init();
+    MX_USART2_UART_Init();
+    MX_ADC1_Init();
+    MX_TIM2_Init();
+    MX_TIM4_Init();
 
-  /* USER CODE END 1 */
+    uart_log_init(&huart2);
+    log_printf("\r\nBOOT: e=run, k=idle, dXX, tXXXX\r\n");
 
-  /* MCU Configuration--------------------------------------------------------*/
+    pwm_init(&htim2, TIM_CHANNEL_1);     // 由 pwm.c 提供
+    pwm_set_percent(duty_cmd);           // 默认 10%
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+    adc_start_dma(&hadc1);               // 由 adc_sense.c 提供
+    HAL_TIM_Base_Start_IT(&htim4);       // 1kHz 控制环
 
-  /* USER CODE BEGIN Init */
-
-  /* USER CODE END Init */
-
-  /* Configure the system clock */
-  SystemClock_Config();
-
-  /* USER CODE BEGIN SysInit */
-
-  /* USER CODE END SysInit */
-
-  /* Initialize all configured peripherals */
-  MX_GPIO_Init();
-  MX_USART2_UART_Init();
-  MX_TIM2_Init();
-  MX_TIM3_Init();
-  /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_IC_Start_IT(&htim3, TIM_CHANNEL_1);
-  /* USER CODE END 2 */
-
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-    /* USER CODE END WHILE */
-
-    /* USER CODE BEGIN 3 */
-	  static uint32_t duty_cmd = 5;
-	      static int dir = 1;
-	      static uint32_t t = 0;
-
-	      /* 本次真正写入的占空比（用于打印对齐测量值） */
-	      uint32_t duty_applied = duty_cmd;
-
-	      /* 1) 更新 PWM 占空比 */
-	      uint32_t arr2 = __HAL_TIM_GET_AUTORELOAD(&htim2);
-	      __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, (arr2 + 1) * duty_applied / 100);
-
-	      /* 2) 更新下一拍的 duty_cmd */
-	      duty_cmd += dir;
-	      if (duty_cmd >= 95) { duty_cmd = 95; dir = -1; }
-	      if (duty_cmd <= 5)  { duty_cmd = 5;  dir =  1; }
-
-	      /* 3) 控制循环节奏 */
-	      HAL_Delay(10);
-
-	      /* 4) 低频打印（200ms） */
-	      if (++t >= 20) {
-	          t = 0;
-
-	          if (cap_ok && period_cnt) {
-	              uint32_t pclk1 = HAL_RCC_GetPCLK1Freq();
-	              uint32_t timclk = pclk1;
-	              if ((RCC->CFGR & RCC_CFGR_PPRE1) != RCC_CFGR_PPRE1_DIV1) timclk = pclk1 * 2;
-	              uint32_t tick_hz = timclk / (htim3.Instance->PSC + 1);
-
-	              float freq = (float)tick_hz / (float)period_cnt;
-	              float duty_meas = 100.0f * (float)high_cnt / (float)period_cnt;
-
-	              printf("f=%.1f Hz duty_meas=%.1f%% duty_cmd=%lu%% (per=%u high=%u)\r\n",
-	                     freq, duty_meas, duty_applied, period_cnt, high_cnt);
-	          } else {
-	              printf("not ready\r\n");
-	          }
-	      }
-	  }
-  /* USER CODE END 3 */
+    for(;;){
+        uart_poll_cmd();
+    }
 }
 
-/**
-  * @brief System Clock Configuration
-  * @retval None
-  */
+// ====== 时钟与错误处理（给链接用；你已有可留用已有实现） ======
+
+
+// 84MHz: HSE/HSI->PLL，根据你项目里 CubeMX 已生成的 SystemClock_Config 保持一致。
+// 若你已有实现，请删掉下面这个并用你现成的那个。
 void SystemClock_Config(void)
 {
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Configure the main internal regulator output voltage
-  */
-  __HAL_RCC_PWR_CLK_ENABLE();
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+    __HAL_RCC_PWR_CLK_ENABLE();
+    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE2);
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 16;
-  RCC_OscInitStruct.PLL.PLLN = 336;
-  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
-  RCC_OscInitStruct.PLL.PLLQ = 4;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+    RCC_OscInitStruct.HSIState       = RCC_HSI_ON;
+    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    RCC_OscInitStruct.PLL.PLLState   = RCC_PLL_ON;
+    RCC_OscInitStruct.PLL.PLLSource  = RCC_PLLSOURCE_HSI;
+    RCC_OscInitStruct.PLL.PLLM       = 16;
+    RCC_OscInitStruct.PLL.PLLN       = 336;
+    RCC_OscInitStruct.PLL.PLLP       = RCC_PLLP_DIV4;   // SYSCLK 84MHz
+    RCC_OscInitStruct.PLL.PLLQ       = 7;
+    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) Error_Handler();
 
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-}
-
-/**
-  * @brief TIM2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM2_Init(void)
-{
-
-  /* USER CODE BEGIN TIM2_Init 0 */
-
-  /* USER CODE END TIM2_Init 0 */
-
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
-
-  /* USER CODE BEGIN TIM2_Init 1 */
-
-  /* USER CODE END TIM2_Init 1 */
-  htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 0;
-  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 4199;
-  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
-  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM2_Init 2 */
-
-  /* USER CODE END TIM2_Init 2 */
-  HAL_TIM_MspPostInit(&htim2);
-
-}
-
-/**
-  * @brief TIM3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM3_Init(void)
-{
-
-  /* USER CODE BEGIN TIM3_Init 0 */
-
-  /* USER CODE END TIM3_Init 0 */
-
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_IC_InitTypeDef sConfigIC = {0};
-
-  /* USER CODE BEGIN TIM3_Init 1 */
-
-  /* USER CODE END TIM3_Init 1 */
-  htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 0;
-  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 65535;
-  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_IC_Init(&htim3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
-  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
-  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
-  sConfigIC.ICFilter = 0;
-  if (HAL_TIM_IC_ConfigChannel(&htim3, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;
-  sConfigIC.ICSelection = TIM_ICSELECTION_INDIRECTTI;
-  if (HAL_TIM_IC_ConfigChannel(&htim3, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM3_Init 2 */
-
-  /* USER CODE END TIM3_Init 2 */
-
-}
-
-/**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART2_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART2_Init 0 */
-
-  /* USER CODE END USART2_Init 0 */
-
-  /* USER CODE BEGIN USART2_Init 1 */
-
-  /* USER CODE END USART2_Init 1 */
-  huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
-  huart2.Init.WordLength = UART_WORDLENGTH_8B;
-  huart2.Init.StopBits = UART_STOPBITS_1;
-  huart2.Init.Parity = UART_PARITY_NONE;
-  huart2.Init.Mode = UART_MODE_TX_RX;
-  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART2_Init 2 */
-
-  /* USER CODE END USART2_Init 2 */
-
-}
-
-/**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
-
-  /* USER CODE END MX_GPIO_Init_1 */
-
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOH_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-
-  /*Configure GPIO pin : B1_Pin */
-  GPIO_InitStruct.Pin = B1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
-
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-
-  /* USER CODE END MX_GPIO_Init_2 */
+    RCC_ClkInitStruct.ClockType      = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                                     | RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+    RCC_ClkInitStruct.SYSCLKSource   = RCC_SYSCLKSOURCE_PLLCLK;
+    RCC_ClkInitStruct.AHBCLKDivider  = RCC_SYSCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;   // 42MHz
+    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;   // 84MHz
+    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) Error_Handler();
 }
 
 /* USER CODE BEGIN 4 */
-static uint16_t rise_prev = 0;
-static uint16_t rise_curr = 0;
-static uint8_t  waiting_fall = 0;
-void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
-{
-    if (htim->Instance != TIM3) return;
 
-    if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1)
-    {
-        uint16_t cap = (uint16_t)HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_1);
-
-        if (!waiting_fall) {
-            // 上升沿：算周期（本次上升沿 - 上次上升沿）
-            rise_curr  = cap;
-            period_cnt = (uint16_t)(rise_curr - rise_prev);
-            rise_prev  = rise_curr;
-
-            // 下一次抓下降沿
-            __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
-            waiting_fall = 1;
-        } else {
-            // 下降沿：算高电平（下降沿 - 本次上升沿）
-            high_cnt = (uint16_t)(cap - rise_curr);
-
-            // 下一次回到抓上升沿
-            __HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
-            waiting_fall = 0;
-
-            if (period_cnt) cap_ok = 1;
-        }
-    }
-}
 /* USER CODE END 4 */
 
 /**
