@@ -16,9 +16,7 @@ extern volatile uint16_t adc_avg;
 
 // ====== 本文件内用的小工具 ======
 static inline int clampi(int v, int lo, int hi){
-    if(v < lo) return lo;
-    if(v > hi) return hi;
-    return v;
+	return v < lo ? lo : v > hi ? hi : v;
 }
 
 // ====== 状态/参数 ======
