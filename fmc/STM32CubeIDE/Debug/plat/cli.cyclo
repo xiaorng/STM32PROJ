@@ -1,0 +1,5 @@
+../plat/cli.c:116:17:bench_cordic_sincos	7
+../plat/cli.c:319:17:bench_fmac_fir	7
+../plat/cli.c:443:6:cli_init	2
+../plat/cli.c:452:6:cli_on_rx_byte	8
+../plat/cli.c:779:6:cli_poll	111

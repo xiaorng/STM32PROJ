@@ -1,0 +1,5 @@
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/regular_conversion_manager.c:122:6:RCM_RegisterRegConv	8	static
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/regular_conversion_manager.c:198:6:RCM_ExecNextConv	0	static
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/regular_conversion_manager.c:235:6:RCM_ReadOngoingConv	8	static
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/regular_conversion_manager.c:278:10:RCM_ExecRegularConv	0	static
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/regular_conversion_manager.c:319:6:RCM_WaitForConv	0	static

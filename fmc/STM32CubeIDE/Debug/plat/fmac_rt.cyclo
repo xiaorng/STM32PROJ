@@ -1,0 +1,7 @@
+../plat/fmac_rt.c:80:6:fmac_rt_init	3
+../plat/fmac_rt.c:107:9:fmac_rt_feed	7
+../plat/fmac_rt.c:145:6:fmac_rt_restart	3
+../plat/fmac_rt.c:151:17:fmac_rt_get_stats	1
+../plat/fmac_rt.c:160:6:fmac_rt_reset_stats	1
+../plat/fmac_rt.c:172:6:fmac_rt_set_active	1
+../plat/fmac_rt.c:179:9:fmac_rt_is_active	1

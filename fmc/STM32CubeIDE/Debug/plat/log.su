@@ -1,0 +1,2 @@
+../plat/log.c:13:6:log_init	0	static
+../plat/log.c:18:6:log_printf	272	static

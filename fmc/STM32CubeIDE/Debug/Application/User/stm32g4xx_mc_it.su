@@ -1,0 +1,3 @@
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/stm32g4xx_mc_it.c:72:6:ADC1_2_IRQHandler	8	static
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/stm32g4xx_mc_it.c:110:6:TIM1_UP_TIM16_IRQHandler	0	static
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/stm32g4xx_mc_it.c:124:6:TIM1_BRK_TIM15_IRQHandler	8	static

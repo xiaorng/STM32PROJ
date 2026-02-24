@@ -1,0 +1,6 @@
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/mc_math.c:58:20:MCM_Clarke	3
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/mc_math.c:299:24:MCM_Trig_Functions	1
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/mc_math.c:130:13:MCM_Park	5
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/mc_math.c:245:20:MCM_Rev_Park	1
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/mc_math.c:343:16:MCM_Sqrt	2
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/mc_math.c:378:17:MCM_floatToIntBit	1

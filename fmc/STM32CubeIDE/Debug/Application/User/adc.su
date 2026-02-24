@@ -1,0 +1,4 @@
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/adc.c:31:6:MX_ADC1_Init	112	static
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/adc.c:124:6:MX_ADC2_Init	104	static
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/adc.c:210:6:HAL_ADC_MspInit	144	static
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/adc.c:307:6:HAL_ADC_MspDeInit	8	static

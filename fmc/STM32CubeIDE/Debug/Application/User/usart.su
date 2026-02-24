@@ -1,0 +1,3 @@
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/usart.c:33:6:MX_USART2_UART_Init	8	static
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/usart.c:76:6:HAL_UART_MspInit	128	static
+E:/STM/MOTOR/foc-fmac-coric/fmc/Src/usart.c:152:6:HAL_UART_MspDeInit	8	static
