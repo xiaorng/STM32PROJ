@@ -31,6 +31,7 @@
 #include "fmac_rt.h"
 #include "cli.h"
 #include "stm32g4xx_ll_usart.h"
+#include "stm32g4xx_ll_dma.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -108,12 +109,38 @@ int main(void)
   /* Initialize interrupts */
   MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
+
+  /*── Fully detach USART2 from the MCSDK ASPEP / DMA path ──────────────
+   *
+   * MX_MotorControl_Init() → ASPEP_start() enables DMA requests (DMAR,
+   * DMAT), DMA channels, and several USART interrupts for the ASPEP
+   * protocol.  We must undo ALL of them before entering CLI polling mode,
+   * otherwise the ASPEP state-machine (still ticked by SysTick /
+   * TIM1_BRK) can fire spurious DMA transmissions whose bytes appear
+   * as garbled output on the serial terminal.
+   */
+
+  /* 1. Disable DMA requests so USART2 stops feeding/draining DMA. */
   LL_USART_DisableDMAReq_RX(USART2);
-  /* CLI uses USART2 in polling mode; keep MCSDK ASPEP IRQ path fully disabled. */
+  LL_USART_DisableDMAReq_TX(USART2);
+
+  /* 2. Disable the DMA channels that ASPEP_start() enabled. */
+  LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_1);   /* USART2_RX */
+  LL_DMA_DisableChannel(DMA1, LL_DMA_CHANNEL_2);   /* USART2_TX */
+
+  /* 3. Disable all USART2 interrupt sources used by ASPEP. */
   LL_USART_DisableIT_TC(USART2);
   LL_USART_DisableIT_IDLE(USART2);
   LL_USART_DisableIT_ERROR(USART2);
   HAL_NVIC_DisableIRQ(USART2_IRQn);
+
+  /* 4. Clear every pending USART2 flag (ORE, FE, NE, IDLE, TC …)
+   *    and flush any stale byte out of RDR so the first real received
+   *    byte is clean. */
+  USART2->ICR = USART_ICR_PECF  | USART_ICR_FECF | USART_ICR_NECF
+              | USART_ICR_ORECF | USART_ICR_IDLECF | USART_ICR_TCCF
+              | USART_ICR_CMCF;
+  (void)USART2->RDR;   /* read-and-discard clears RXNE */
   fmac_rt_init();
   cli_init();
   /* USER CODE END 2 */
